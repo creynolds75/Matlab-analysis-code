@@ -1,0 +1,173 @@
+% Input - Home ID and start and end dates
+homeid = 1373; %1353;
+year = 2017;
+month = 5;%8;
+day = 5;%10;
+
+% Get sensor data for a 24 hour period
+startdate = datenum([year month day 00 00 00]);
+enddate = datenum([year month day+1 00 00 00]);
+[ stamp, itemidx_nyce, areaid_nyce, event] = Orcatech.Databases.SensorData.getPresenceSensorData(homeid, startdate, enddate);
+
+% find all the 32s 
+event32 = find(event == 32);
+stamp32 = stamp(event32);
+areaid_nyce32 = areaid_nyce(event32);
+
+% get all the 32 firings that occurred in one of our candidate sleeping
+% areas - the bedrooms and living rooms
+candidateareas = [4 5 6 29 30];
+keep = find(ismember(areaid_nyce32, candidateareas));
+event32 = event32(keep);
+stamp32 = stamp32(keep);
+areaid_nyce32 = areaid_nyce32(keep);
+
+% figure out the time difference between these 32 firings in the candidate
+% rooms and 1:00 AM
+oneam  = datenum([year month day+1 1 0 0]);
+timediff = abs(stamp32 - oneam);
+
+% Find the event that happened closest to 1 AM
+[~, i] = min(timediff);
+% Label the room that that firing occurred in as the sleeping room
+sleepingroom = areaid_nyce32(i);
+
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+
+
+% Collect all the presence sensor data for the given home ID and given date
+import Orcatech.Algorithms.Sleep
+import Orcatech.Flags.Areas
+sixpm = datenum([year month day 18 0 0]);
+tenam = datenum([year month day+1 12 0 0]);
+startdate = datenum([year month day 17 0 0]);
+enddate = datenum([year month day+2 12 0 0]);
+[ stamp, itemidx_nyce, areaid_nyce, event] = Orcatech.Databases.SensorData.getPresenceSensorData(homeid, startdate, enddate);
+    
+% * Get Area Ids: Determine the area ids for Sleep.AREA_FLAGS constants
+bedids = Areas.getIds(Sleep.AREA_FLAGS_BEDROOMS)
+bathids = Areas.getIds(Sleep.AREA_FLAGS_BATHROOMS)
+walkinids = Areas.getIds(Sleep.AREA_FLAGS_WALK_IN_CLOSETS)
+livingids = Areas.getIds(Sleep.AREA_FLAGS_LIVING_ROOMS)
+diningids = Areas.getIds(Sleep.AREA_FLAGS_DINING_ROOMS)
+leavingid = 66;
+kitchenids = [23 24];
+
+bedroomIndices = [];
+bathroomIndices = [];
+kitchenIndices = [];
+frontdoorIndices = [];
+livingroomIndices = [];
+for i = 1 : length(areaid_nyce)
+    if ismember(areaid_nyce(i), sleepingroom)
+        bedroomIndices = [bedroomIndices i];
+    elseif ismember(areaid_nyce(i), livingids)
+        livingroomIndices = [livingroomIndices i];
+    elseif ismember(areaid_nyce(i), bathids)
+        bathroomIndices = [bathroomIndices i];
+   elseif ismember(areaid_nyce(i), kitchenids);
+       kitchenIndices = [kitchenIndices i];
+    elseif ismember(areaid_nyce(i), leavingid)
+       frontdoorIndices = [frontdoorIndices i];
+    end
+end
+
+bedroomStamps = stamp(bedroomIndices);
+bedroomEvents = event(bedroomIndices);
+
+livingroomStamps = stamp(livingroomIndices);
+livingroomEvents = event(livingroomIndices);
+
+bathroomStamps = stamp(bathroomIndices);
+bathroomEvents = event(bathroomIndices);
+
+kitchenStamps = stamp(kitchenIndices);
+kitchenEvents = event(kitchenIndices);
+
+frontdoorStamps = stamp(frontdoorIndices);
+frontdoorEvents = event(frontdoorIndices);
+
+% Find all the 32 firings - 32 = presence detected
+presenceDetectedIndices = find(bedroomEvents == 32);
+
+% Find the time stamps for these detections
+presenceDetectedTimeStamps = bedroomStamps(presenceDetectedIndices);
+
+% Find time stamps between 5 pm and noon - this will need to be generalized 
+
+nighttimeIndices = find(presenceDetectedTimeStamps > sixpm ...
+    & presenceDetectedTimeStamps < tenam);
+nighttimeTimeStamps = presenceDetectedTimeStamps(nighttimeIndices);
+
+% Convert this into hours since 6 pm - this will need to be generalized
+% MATLAB datenums are given in units of days so multiply by 24 to convert
+% to hours
+hoursSince6pm = (nighttimeTimeStamps - sixpm)*24;
+
+% Calculate the difference between firings
+timeDiffBetweenFirings = diff(hoursSince6pm);
+
+% Find gaps greater than 5 minutes
+gaps = find(timeDiffBetweenFirings > 5/60);
+
+startgaps = [];
+endgaps = [];
+
+
+% Are there gaps?
+totalsleeptime = 0;
+if ~isempty(gaps)
+    for i = 1 : length(gaps)
+        otherfirings = false;
+        startgap = nighttimeTimeStamps(gaps(i));
+        endgap = nighttimeTimeStamps(gaps(i)+1);
+        disp(['start gap ' datestr(startgap)]);
+
+        % did the front door open during this time?
+        % find all the front door time stamps during this time
+        frontdoorGapIndices = find(frontdoorStamps > startgap & frontdoorStamps < endgap);
+        frontdoorGapEvents = frontdoorEvents(frontdoorGapIndices);
+        %Find all instances of the front door opening
+        if length(find(frontdoorGapEvents == 31)) > 0
+            disp('Door was opened')
+            otherfirings = true;
+        end
+        % did the bathroom sensor fire during this time?
+        bathroomGapIndices = find(bathroomStamps > startgap & bathroomStamps < endgap);
+        bathroomGapEvents = bathroomEvents(bathroomGapIndices);
+        if length(find(bathroomGapEvents == 32)) > 0
+            disp('Bathroom firing')
+            otherfirings = true;
+        end
+        
+        % did the kitchen sensor fire during this time?
+        kitchenGapIndices = find(kitchenStamps > startgap & kitchenStamps < endgap);
+        kitchenGapEvents = kitchenEvents(kitchenGapIndices);
+        if length(find(kitchenGapEvents == 32)) > 0
+            disp('Kitchen firing')
+            otherfirings = true;
+        end
+        
+        % did the living room sensor fire during this time?
+        livingroomGapIndices = find(livingroomStamps > startgap & livingroomStamps < endgap);
+        livingroomGapEvents = livingroomEvents(livingroomGapIndices);
+        if length(find(livingroomGapEvents == 32)) > 0
+            disp('Living room firing')
+            otherfirings = true;
+        end
+        if otherfirings == false
+            totalsleeptime = totalsleeptime + (endgap - startgap);
+            startgaps = [startgaps startgap];
+            endgaps = [endgaps endgap];
+        end
+        disp(['end gap ' datestr(endgap)]);
+        disp(' ')
+    end
+end
+
+bedtime = datestr(min(startgaps))
+waketime = datestr(max(endgaps))
+totalsleeptime = totalsleeptime*24*60
+
+
