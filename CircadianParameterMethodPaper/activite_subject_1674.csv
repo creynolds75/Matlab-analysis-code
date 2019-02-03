@@ -1,0 +1,1 @@
+stamp (unix),duration(s),steps,distance(cm),runState(0->not,1->running),walkState(0->not,1->walking),sleepState(0->awake,1->Light,2->Deep,3->REM)
